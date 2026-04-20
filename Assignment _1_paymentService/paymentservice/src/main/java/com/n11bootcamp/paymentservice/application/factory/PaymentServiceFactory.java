@@ -1,6 +1,7 @@
 package com.n11bootcamp.paymentservice.application.factory;
 
 import com.n11bootcamp.paymentservice.application.service.PaymentService;
+import com.n11bootcamp.paymentservice.domain.exception.PaymentMethodNotFoundException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -20,7 +21,7 @@ public class PaymentServiceFactory {
     public PaymentService getService(String code) {
         PaymentService service = services.get(code);
         if (service == null) {
-            throw new RuntimeException("Geçersiz ödeme yöntemi: " + code);
+            throw new PaymentMethodNotFoundException(code);
         }
         return service;
     }

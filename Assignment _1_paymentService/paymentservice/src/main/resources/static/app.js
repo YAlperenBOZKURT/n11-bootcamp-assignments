@@ -15,7 +15,8 @@ $(function () {
     function loadMethods() {
         fetch('/api/payments/method-types')
             .then(res => res.json())
-            .then(methods => {
+            .then(res => {
+                const methods = res.data;
                 const options = methods.map(m =>
                     `<option value="${m.id}">${m.displayName}</option>`
                 );
@@ -35,11 +36,13 @@ $(function () {
         const url = `/api/payments/pay?amount=${amount}&paymentMethodTypeId=${paymentMethodTypeId}`;
 
         fetch(url, { method: 'POST' })
+            .then(res => res.json())
             .then(res => {
-                if (!res.ok) throw new Error('fail');
-                return res.json();
-            })
-            .then(data => {
+                if (!res.success) {
+                    showResult(res.errorMessage || 'Ödeme başarısız', false);
+                    return;
+                }
+                const data = res.data;
                 const time = new Date(data.createdAt).toLocaleString('tr-TR');
                 showResult(`${data.message} — ${data.amount} TL (${time})`, data.success);
             })

@@ -5,12 +5,16 @@
 
 I built a simple payment service with Spring Boot. There's a small HTML/JS UI on top of the REST API where the user picks a payment method and enters an amount and a confirmation message gets printed to the screen on payment.
 
+This project goes beyond the assignment requirements on purpose. I used it as a chance to practice patterns I'll need in real projects (global error handling, standardized API responses, etc.).
+
 ## Project Structure - JDK 21 / Maven / Spring Boot 3.5.13
 
 ```text
 src/main/java/com/n11bootcamp/paymentservice/
 ├── PaymentserviceApplication.java
 ├── domain/
+│   ├── exception/
+│   │   └── PaymentMethodNotFoundException.java
 │   └── model/
 │       ├── Payment.java
 │       └── PaymentMethodType.java
@@ -32,8 +36,12 @@ src/main/java/com/n11bootcamp/paymentservice/
 │       ├── PaymentRepository.java
 │       └── PaymentMethodTypeRepository.java
 └── presentation/
-    └── controller/
-        └── PaymentController.java
+    ├── controller/
+    │   └── PaymentController.java
+    ├── dto/
+    │   └── ApiResponse.java
+    └── exception/
+        └── GlobalExceptionHandler.java
 
 src/main/resources/
 ├── static/
@@ -46,7 +54,7 @@ src/main/resources/
 
 ## Goal
 
-I built the payment system around SOLID principles. Whenever a new payment method needs to be added, **no existing code has to change**: you add a row to the `payment_method_types` table and write a service that implements the `PaymentService` interface — the system picks up the new method automatically. The whole design is built directly on **Open/Closed Principle (OCP)** and **Single Responsibility Principle (SRP)**.
+I built the payment system around SOLID principles. Whenever a new payment method needs to be added, **no existing code has to change**: you add a row to the `payment_method_types` table and write a service that implements the `PaymentService` interface. The system picks up the new method automatically. The whole design is built directly on **Open/Closed Principle (OCP)** and **Single Responsibility Principle (SRP)**.
 
 ## How It Works
 
@@ -129,14 +137,21 @@ This way the Factory doesn't change when a new service is added either. Spring a
 
 I solved the controller side with a single method: it takes the incoming `paymentMethodTypeId`, fetches the `code` from the DB, asks the Factory and delegates the work to whatever service comes back. So when more payment methods get added later, the flow doesn't have to change. This naturally lines up with the **Dependency Inversion** principle.
 
+Every response is wrapped in `ApiResponse<T>` so that the API always returns a standardized JSON structure. The frontend can always check `success` first, then read `data` or `errorMessage`.
+
 ```java
-public PaymentResponse pay(BigDecimal amount, Long paymentMethodTypeId) {
+public ApiResponse<PaymentResponse> pay(BigDecimal amount, Long paymentMethodTypeId) {
     PaymentMethodType type = paymentMethodTypeService.getById(paymentMethodTypeId);
-    return paymentServiceFactory.getService(type.getCode()).processPayment(amount, type);
+    PaymentResponse response = paymentServiceFactory.getService(type.getCode()).processPayment(amount, type);
+    return ApiResponse.success(response);
 }
 ```
 
-### 6) Logging with AOP (Before / After Payment)
+### 6) Error Handling (Custom Exception + Global Handler)
+
+Instead of throwing generic `RuntimeException`s, the service and factory throw a `PaymentMethodNotFoundException`. A `@RestControllerAdvice` class (`GlobalExceptionHandler`) catches these centrally. No try-catch blocks needed in the controller. The handler returns the appropriate HTTP status code (404 for not found, 500 for unexpected errors) wrapped in the same `ApiResponse` format, so both success and error responses share a consistent structure. It establishes a standard.
+
+### 7) Logging with AOP (Before / After Payment)
 
 Instead of writing the logging into every service, I collected it in a single place with **Aspect-Oriented Programming**.
 
@@ -159,7 +174,7 @@ public class PaymentLoggingAspect {
 
 `@Before` runs right before the payment method is called, `@AfterReturning` runs after a successful return. Since the pointcut targets the `PaymentService+` interface, every implementation (card, PayPal, anything added later) gets this logging **without any code change**.
 
-### 7) Frontend
+### 8) Frontend
 
 I put a simple Vanilla JS / HTML / CSS setup on the Spring Boot side; this both made it easy to test the product visually and saved me from dealing with CORS headaches. The static files live under `src/main/resources/static/`, Spring Boot serves them automatically.
 
@@ -191,12 +206,16 @@ Controller, Factory, the other services, none of them change.
 
 Bu projede Spring Boot ile basit bir ödeme servisi oluşturuldu. REST API üzerine küçük bir HTML/JS arayüz eklenerek kullanıcıdan ödeme yöntemi ve tutar bilgisi alınıyor, ödediğinde ise bilgi mesajı ekrana basılıyor.
 
+Bu proje bilerek ödev gereksinimlerinin ötesine geçiyor. Gerçek projelerde ihtiyaç duyacağım pattern'leri (merkezi hata yönetimi, standart API response yapısı vb.) pratik etmek için fırsat olarak kullandım.
+
 ## Proje Yapısı - JDK 21 / Maven / Spring Boot 3.5.13
 
 ```text
 src/main/java/com/n11bootcamp/paymentservice/
 ├── PaymentserviceApplication.java
 ├── domain/
+│   ├── exception/
+│   │   └── PaymentMethodNotFoundException.java
 │   └── model/
 │       ├── Payment.java
 │       └── PaymentMethodType.java
@@ -218,8 +237,12 @@ src/main/java/com/n11bootcamp/paymentservice/
 │       ├── PaymentRepository.java
 │       └── PaymentMethodTypeRepository.java
 └── presentation/
-    └── controller/
-        └── PaymentController.java
+    ├── controller/
+    │   └── PaymentController.java
+    ├── dto/
+    │   └── ApiResponse.java
+    └── exception/
+        └── GlobalExceptionHandler.java
 
 src/main/resources/
 ├── static/
@@ -315,14 +338,21 @@ Bu sayede yeni servis eklendiğinde Factory de değişmiyor. Spring otomatik ola
 
 Controller'da tek metot ile çözdük: gelen `paymentMethodTypeId`'den DB'deki `code`'u alıp Factory'ye soruyor, dönen servise işi devrediyor. Bu sayede ileride başka ödeme yöntemleri eklediğimizde akışta değişiklik yapmak zorunda kalmayacağız. **Dependency Inversion** prensibine uygun olmuş oluyor.
 
+Tüm response'lar `ApiResponse<T>` ile sarmalanıyor; böylece API standart bir JSON yapısı dönüyor. Frontend her zaman önce `success` alanını kontrol edip ardından `data` veya `errorMessage` okuyor.
+
 ```java
-public PaymentResponse pay(BigDecimal amount, Long paymentMethodTypeId) {
+public ApiResponse<PaymentResponse> pay(BigDecimal amount, Long paymentMethodTypeId) {
     PaymentMethodType type = paymentMethodTypeService.getById(paymentMethodTypeId);
-    return paymentServiceFactory.getService(type.getCode()).processPayment(amount, type);
+    PaymentResponse response = paymentServiceFactory.getService(type.getCode()).processPayment(amount, type);
+    return ApiResponse.success(response);
 }
 ```
 
-### 6) AOP ile Loglama (Ödeme Öncesi / Sonrası)
+### 6) Hata Yönetimi (Custom Exception + Global Handler)
+
+Service ve Factory'de genel `RuntimeException` fırlatmak yerine `PaymentMethodNotFoundException` fırlatılıyor. `@RestControllerAdvice` anotasyonlu `GlobalExceptionHandler` sınıfı bu hataları merkezi olarak yakalıyor. Controller'da try-catch yazmaya gerek kalmıyor. Handler uygun HTTP status code'u (bulunamadı için 404, beklenmeyen hatalar için 500) aynı `ApiResponse` formatında dönüyor; böylece başarılı ve hatalı response'lar tutarlı bir yapıyı paylaşıyor. Standart oluşturuyor.
+
+### 7) AOP ile Loglama (Ödeme Öncesi / Sonrası)
 
 Loglamayı her servisin içine yazmak yerine **Aspect-Oriented Programming** ile tek bir noktada topladım.
 
@@ -345,7 +375,7 @@ public class PaymentLoggingAspect {
 
 `@Before` ödeme metodu çağrılmadan hemen önce, `@AfterReturning` ise başarılı dönüşten sonra çalışıyor. Pointcut `PaymentService+` interface'ini hedef aldığı için tüm implementasyonlar (kart, PayPal, ileride eklenecekler) bu loglamayı **kod değişikliği olmadan** alıyor.
 
-### 7) Önyüz
+### 8) Önyüz
 
 Spring Boot tarafına basit bir Vanilla JS / HTML / CSS yapı kurdum; hem ürünü görsel olarak test etmeyi kolaylaştırdı hem de CORS dertleriyle uğraşmaktan kurtardı. Statik dosyalar `src/main/resources/static/` altında, Spring Boot bunları otomatik servis ediyor.
 

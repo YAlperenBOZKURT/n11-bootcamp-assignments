@@ -2,6 +2,7 @@ package com.n11bootcamp.paymentservice.application.service.impl;
 
 import com.n11bootcamp.paymentservice.application.dto.PaymentMethodTypeResponse;
 import com.n11bootcamp.paymentservice.application.service.PaymentMethodTypeService;
+import com.n11bootcamp.paymentservice.domain.exception.PaymentMethodNotFoundException;
 import com.n11bootcamp.paymentservice.domain.model.PaymentMethodType;
 import com.n11bootcamp.paymentservice.infrastructure.repository.PaymentMethodTypeRepository;
 import org.springframework.stereotype.Service;
@@ -29,6 +30,6 @@ public class PaymentMethodTypeServiceImpl implements PaymentMethodTypeService {
     @Override
     public PaymentMethodType getById(Long id) {
         return paymentMethodTypeRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Ödeme yöntemi bulunamadı"));
+                .orElseThrow(() -> new PaymentMethodNotFoundException(id));
     }
 }

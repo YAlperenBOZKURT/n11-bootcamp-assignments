@@ -5,6 +5,7 @@ import com.n11bootcamp.paymentservice.application.dto.PaymentResponse;
 import com.n11bootcamp.paymentservice.application.factory.PaymentServiceFactory;
 import com.n11bootcamp.paymentservice.application.service.PaymentMethodTypeService;
 import com.n11bootcamp.paymentservice.domain.model.PaymentMethodType;
+import com.n11bootcamp.paymentservice.presentation.dto.ApiResponse;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -24,14 +25,16 @@ public class PaymentController {
     }
 
     @GetMapping("/method-types")
-    public List<PaymentMethodTypeResponse> getMethodTypes() {
-        return paymentMethodTypeService.getPaymentMethodTypes();
+    public ApiResponse<List<PaymentMethodTypeResponse>> getMethodTypes() {
+        List<PaymentMethodTypeResponse> methodTypes = paymentMethodTypeService.getPaymentMethodTypes();
+        return ApiResponse.success(methodTypes);
     }
 
     @PostMapping("/pay")
-    public PaymentResponse pay(@RequestParam BigDecimal amount,
-                               @RequestParam Long paymentMethodTypeId) {
+    public ApiResponse<PaymentResponse> pay(@RequestParam BigDecimal amount,
+                                            @RequestParam Long paymentMethodTypeId) {
         PaymentMethodType type = paymentMethodTypeService.getById(paymentMethodTypeId);
-        return paymentServiceFactory.getService(type.getCode()).processPayment(amount, type);
+        PaymentResponse response = paymentServiceFactory.getService(type.getCode()).processPayment(amount, type);
+        return ApiResponse.success(response);
     }
 }

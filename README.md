@@ -1,7 +1,498 @@
 # n11 Bootcamp Assignments
 
+
+
 <details open>
+<summary><strong> Assignment - 2:JWT Auth — Refresh Token Demo - 25.04.2026</strong></summary>
+
+<details open>
+<summary><strong>English</strong></summary>
+
+I built a project around how JWT tokens work using Spring Boot and React. A user can register, log in, visit a protected dashboard and log out. Tokens are kept in **HttpOnly cookies**; when the access token expires, the refresh token silently gets a new one in the background. The dashboard also shows a live countdown of both tokens' remaining lifetime.
+
+## Project Structure - JDK 21 / Maven / Spring Boot 3.5.13 / React 19 / Vite / TypeScript
+
+```text
+jwtauth/
+├── backend/
+│   └── src/main/java/com/yabozkurt/jwtauth/
+│       ├── JwtauthApplication.java
+│       ├── domain/
+│       │   ├── exception/
+│       │   │   ├── UserAlreadyExistsException.java
+│       │   │   ├── UserNotFoundException.java
+│       │   │   ├── InvalidRefreshTokenException.java
+│       │   │   └── MissingRefreshTokenException.java
+│       │   ├── model/
+│       │   │   ├── User.java
+│       │   │   └── enums/Role.java
+│       │   └── repository/
+│       │       └── UserRepository.java
+│       ├── application/
+│       │   ├── dto/
+│       │   │   ├── LoginRequest.java
+│       │   │   ├── RegisterRequest.java
+│       │   │   ├── TokenResponse.java
+│       │   │   └── TokenInfoResponse.java
+│       │   └── service/
+│       │       ├── AuthService.java
+│       │       └── impl/AuthServiceImpl.java
+│       ├── infrastructure/
+│       │   ├── config/SecurityConfig.java
+│       │   └── security/
+│       │       ├── JwtTokenManager.java
+│       │       ├── JwtAuthFilter.java
+│       │       ├── CookieHelper.java
+│       │       └── CustomUserDetailsService.java
+│       └── presentation/
+│           ├── controller/AuthController.java
+│           ├── dto/
+│           │   ├── ApiResponse.java
+│           │   └── ApiErrorResponse.java
+│           └── exception/GlobalExceptionHandler.java
+│
+└── frontend/
+    └── src/
+        ├── main.tsx
+        ├── App.tsx
+        ├── api/axiosInstance.ts
+        ├── components/ProtectedRoute.tsx
+        └── pages/
+            ├── HomePage.tsx
+            ├── LoginPage.tsx
+            ├── RegisterPage.tsx
+            └── DashboardPage.tsx
+```
+
+## Goal
+
+I built the auth flow around a **15 min access token + 7 day refresh token**, both stored in HttpOnly cookies. The browser never touches the token directly, so XSS can't read it from `localStorage`. The frontend never has to think about token lifetime either: when a request returns 401, an axios interceptor silently calls `/auth/refresh` and retries. The whole thing is organized in layers (domain / application / infrastructure / presentation) so that each concern lives in one place and can change on its own.
+
+## How It Works
+
+### 1) Domain model
+
+I started with a single `User` entity. A user has an email, a bcrypt-hashed password and a role.
+
+```java
+@Entity
+@Table(name = "users")
+public class User {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String email;
+
+    @Column(nullable = false)
+    private String password;
+
+    @Enumerated(EnumType.STRING)
+    private Role role; // USER, ADMIN
+}
+```
+
+Role is an enum — simpler than a separate table for a two-role project and Spring Security maps it straight to `ROLE_USER` / `ROLE_ADMIN`.
+
+### 2) Two tokens, not one — and they're distinguishable
+
+I split the JWTs into two kinds on purpose:
+
+- **Access token** → short-lived (15 min). Sent on every request.
+- **Refresh token** → long-lived (7 days). Only touched by `/auth/refresh`.
+
+Both tokens are signed with the same key but carry a `type` claim (`access` or `refresh`). This matters: without it, a stolen refresh token could be passed as an access token and the filter would happily authenticate it. The filter now rejects anything whose `type` isn't `access` and `/auth/refresh` rejects anything whose `type` isn't `refresh`.
+
+```java
+private String buildToken(String email, long expiration, String type) {
+    return Jwts.builder()
+            .subject(email)
+            .claim(TOKEN_TYPE_CLAIM, type)
+            .issuedAt(new Date())
+            .expiration(new Date(System.currentTimeMillis() + expiration))
+            .signWith(getSigningKey())
+            .compact();
+}
+```
+
+If an attacker somehow grabs an access token, the damage window is tiny. The refresh token stays HttpOnly and only leaves the browser when explicitly asked for.
+
+### 3) HttpOnly cookies instead of Authorization headers
+
+I went with cookies because `HttpOnly` cookies can't be read by JavaScript, which closes the XSS token-theft path. `CookieHelper` is the single place that knows cookie names, builds them, reads them back off the request and clears them. Every other class that needs cookies goes through this helper — cookie name strings never leak outside.
+
+```java
+public void writeAuthCookies(HttpServletResponse response, String accessToken, String refreshToken) { ... }
+public void writeAccessTokenCookie(HttpServletResponse response, String accessToken) { ... }
+public String readAccessToken(HttpServletRequest request) { ... }
+public String readRefreshToken(HttpServletRequest request) { ... }
+public void clearCookies(HttpServletResponse response) { ... }
+```
+
+### 4) The JWT filter
+
+On every request, `JwtAuthFilter` pulls `accessToken` from `CookieHelper.readAccessToken`, validates it (signature + expiry + `type == access`), loads the user and puts an `Authentication` into the `SecurityContext`. Any JWT exception (expired, malformed, wrong signature) is swallowed by a try-catch — the filter just falls through and the security chain returns 401 if the endpoint requires auth.
+
+```java
+try {
+    if (jwtTokenManager.isTokenValid(token) && jwtTokenManager.isAccessToken(token)) {
+        // load user, set SecurityContext
+    }
+} catch (Exception ignored) {
+    // invalid/expired token: skip auth, spring returns 401 if endpoint is protected
+}
+filterChain.doFilter(request, response);
+```
+
+### 5) Stateless, session-free security
+
+Spring Security is configured as stateless. No `JSESSIONID`, no server-side session. `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` are public; everything else (`/auth/me`, `/auth/token-info`, any future endpoint) requires authentication.
+
+```java
+http
+    .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+    .csrf(csrf -> csrf.disable())
+    .authorizeHttpRequests(auth -> auth
+        .requestMatchers("/auth/register", "/auth/login", "/auth/refresh", "/auth/logout").permitAll()
+        .anyRequest().authenticated()
+    )
+    .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+    .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+```
+
+CORS is configured with `allowCredentials = true` so the browser actually sends the cookies to the Vite dev server.
+
+### 6) Standardized responses + global error handling
+
+Every response is wrapped in `ApiResponse<T>` and failures are caught centrally by `GlobalExceptionHandler`. No try-catch in the controllers. 409 for "user already exists", 404 for "user not found", **401 for missing or invalid refresh tokens** so the frontend's interceptor can redirect to login cleanly and 500 for anything unexpected.
+
+```java
+@ExceptionHandler(InvalidRefreshTokenException.class)
+public ResponseEntity<ApiErrorResponse> handleInvalidRefreshToken(InvalidRefreshTokenException ex) {
+    return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+            .body(new ApiErrorResponse(401, ex.getMessage()));
+}
+```
+
+### 7) Silent refresh on the frontend
+
+The React side never sees the tokens, they're HttpOnly. But when the access token expires while the user is inside the app, surfacing that 401 as an error would hurt the UX. So the axios instance has a response interceptor: on a 401, it tries `/auth/refresh` once and if that works, it retries the original request. If refresh fails too, it bounces the user to `/login`.
+
+```ts
+axiosInstance.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      try {
+        await axiosInstance.post('/auth/refresh');
+        return axiosInstance(originalRequest);
+      } catch (refreshError) {
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+```
+
+The `_retry` flag is there to stop infinite loops if `/auth/refresh` itself returns 401.
+
+### 8) Protected routes
+
+`ProtectedRoute` guards pages that require auth. When a logged-out user tries to reach a members-only URL, it calls `/auth/me` and checks the result. If it succeeds, the user goes to the page; otherwise they're redirected to the login page. The `/me` endpoint itself just returns `OK` — its only job is to make the filter run, so the status code is the actual answer.
+
+### 9) Live token lifecycle on the dashboard
+
+To make the invisible refresh mechanism visible, the dashboard shows a live countdown for both tokens. Since the tokens are HttpOnly (JS can't decode them), the backend exposes `GET /auth/token-info` which reads both cookies and returns their `exp` claims. The service extracts the timestamps:
+
+```java
+public TokenInfoResponse getTokenInfo(String accessToken, String refreshToken) {
+    long accessExp = jwtTokenManager.extractExpiration(accessToken);
+    long refreshExp = jwtTokenManager.extractExpiration(refreshToken);
+    return new TokenInfoResponse(accessExp, refreshExp);
+}
+```
+
+The frontend ticks every second and right after the access token hits zero it re-fetches `/auth/token-info`. That re-fetch returns 401 → interceptor refreshes → the retry returns fresh expiry timestamps. You can watch the access timer reset itself on the screen.
+
+## Auth Flow At a Glance
+
+1. **Register** → `POST /auth/register` with email + password → user created, password bcrypt-hashed.
+2. **Login** → `POST /auth/login` → server signs two JWTs (with `type` claims), sets them as HttpOnly cookies.
+3. **Protected request** → cookie goes with the request automatically, `JwtAuthFilter` validates it (signature + expiry + `type == access`).
+4. **Access expired** → server returns 401 → axios interceptor calls `/auth/refresh` → server validates refresh token (`type == refresh`) → new access cookie is set → original request retried.
+5. **Dashboard countdown** → `GET /auth/token-info` returns expiry timestamps; a `setInterval` draws the remaining time.
+6. **Logout** → `POST /auth/logout` → both cookies cleared with `maxAge = 0`.
+
+## Requirements
+
+- JDK 21
+- Maven
+- Node 20+
+- Docker (for PostgreSQL)
+
+## Running
+
+1. **Database:** From `backend/`, run `docker compose up -d` to start PostgreSQL on port 5432. If there's a port conflict, edit `compose.yaml` and update the matching URL in `application.yaml`.
+2. **Backend:** In `backend/`, run `./mvnw spring-boot:run` (or start it from your IDE). Server comes up on `http://localhost:8080`. A seed admin (`admin@gmail.com`, password `admin123`) is inserted on first boot via `data.sql`.
+3. **Frontend:** In `frontend/`, run `npm install` once, then `npm run dev`. The Vite dev server is on `http://localhost:5173`.
+4. **Test:** Open `http://localhost:5173`, register a new user or log in with the seeded admin and you should land on `/dashboard`.
+
+</details>
+
+<details>
+<summary><strong>Türkçe</strong></summary>
+
+Spring Boot ve React ile JWT token çalışma mantığı ile alakalı bir proje yaptım. Kullanıcı kayıt olabiliyor, giriş yapabiliyor, korumalı bir dashboard sayfasına gidebiliyor ve çıkış yapabiliyor. Token'lar **HttpOnly cookie** olarak tutuluyor; access token süresi dolduğunda refresh token arka planda sessizce yenisini alıyor. Dashboard ayrıca iki token'ın kalan sürelerini canlı olarak gösteriyor.
+
+## Proje Yapısı - JDK 21 / Maven / Spring Boot 3.5.13 / React 19 / Vite / TypeScript
+
+```text
+jwtauth/
+├── backend/
+│   └── src/main/java/com/yabozkurt/jwtauth/
+│       ├── JwtauthApplication.java
+│       ├── domain/
+│       │   ├── exception/
+│       │   │   ├── UserAlreadyExistsException.java
+│       │   │   ├── UserNotFoundException.java
+│       │   │   ├── InvalidRefreshTokenException.java
+│       │   │   └── MissingRefreshTokenException.java
+│       │   ├── model/
+│       │   │   ├── User.java
+│       │   │   └── enums/Role.java
+│       │   └── repository/
+│       │       └── UserRepository.java
+│       ├── application/
+│       │   ├── dto/
+│       │   │   ├── LoginRequest.java
+│       │   │   ├── RegisterRequest.java
+│       │   │   ├── TokenResponse.java
+│       │   │   └── TokenInfoResponse.java
+│       │   └── service/
+│       │       ├── AuthService.java
+│       │       └── impl/AuthServiceImpl.java
+│       ├── infrastructure/
+│       │   ├── config/SecurityConfig.java
+│       │   └── security/
+│       │       ├── JwtTokenManager.java
+│       │       ├── JwtAuthFilter.java
+│       │       ├── CookieHelper.java
+│       │       └── CustomUserDetailsService.java
+│       └── presentation/
+│           ├── controller/AuthController.java
+│           ├── dto/
+│           │   ├── ApiResponse.java
+│           │   └── ApiErrorResponse.java
+│           └── exception/GlobalExceptionHandler.java
+│
+└── frontend/
+    └── src/
+        ├── main.tsx
+        ├── App.tsx
+        ├── api/axiosInstance.ts
+        ├── components/ProtectedRoute.tsx
+        └── pages/
+            ├── HomePage.tsx
+            ├── LoginPage.tsx
+            ├── RegisterPage.tsx
+            └── DashboardPage.tsx
+```
+
+## Amaç
+
+Kimlik doğrulama akışını **15 dk access token + 7 günlük refresh token** üzerine kurdum; ikisi de HttpOnly cookie olarak saklanıyor. Tarayıcı token'a doğrudan erişemediği için XSS ile `localStorage`'tan çalınma riski ortadan kalkıyor. Frontend de token ömrüyle uğraşmak zorunda değil: bir istek 401 dönerse axios interceptor'ı sessizce `/auth/refresh` çağırıp isteği tekrarlıyor. Proje katmanlara ayrılmış (domain / application / infrastructure / presentation) — her sorumluluk tek bir yerde yaşıyor ve ayrı ayrı değişebiliyor.
+
+## Çalışma Mantığı
+
+### 1) Domain modeli
+
+Tek bir `User` entity ile başladım. Kullanıcının bir email'i, bcrypt ile hash'lenmiş şifresi ve bir rolü var.
+
+```java
+@Entity
+@Table(name = "users")
+public class User {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true)
+    private String email;
+
+    @Column(nullable = false)
+    private String password;
+
+    @Enumerated(EnumType.STRING)
+    private Role role; // USER, ADMIN
+}
+```
+
+Rol bir enum — iki rollü bir proje için ayrı bir tablo yapmak aşırı kaçardı, Spring Security de bunu doğrudan `ROLE_USER` / `ROLE_ADMIN`'e map'liyor.
+
+### 2) Tek token değil, iki token ve birbirinden ayırt edilebilir
+
+JWT'leri bilinçli olarak ikiye ayırdım:
+
+- **Access token** → kısa ömürlü (15 dk). Her istekte gönderiliyor.
+- **Refresh token** → uzun ömürlü (7 gün). Sadece `/auth/refresh` tarafından okunuyor.
+
+İkisi de aynı anahtarla imzalı ama içlerinde `type` claim'i var (`access` veya `refresh`). Bu önemli: olmasa, çalınan bir refresh token access token yerine kullanılabilir ve filter authenticate ederdi. Artık filter `type`'ı `access` olmayan her token'ı reddediyor, `/auth/refresh` de `type`'ı `refresh` olmayanı reddediyor.
+
+```java
+private String buildToken(String email, long expiration, String type) {
+    return Jwts.builder()
+            .subject(email)
+            .claim(TOKEN_TYPE_CLAIM, type)
+            .issuedAt(new Date())
+            .expiration(new Date(System.currentTimeMillis() + expiration))
+            .signWith(getSigningKey())
+            .compact();
+}
+```
+
+Saldırgan access token'ı ele geçirse bile etki süresi çok kısa. Refresh token HttpOnly kalıyor ve yalnızca istenerek tarayıcıdan çıkıyor.
+
+### 3) `Authorization` header yerine HttpOnly cookie
+
+Cookie yaklaşımını tercih ettim çünkü `HttpOnly` cookie'yi JavaScript okuyamaz; bu XSS ile token çalınma yolunu kapatıyor. `CookieHelper` cookie isimlerini bilen, cookie üreten, request'ten okuyan ve temizleyen tek sınıf. Cookie'ye ihtiyaç duyan her yer buradan geçiyor. Cookie ismi string'leri başka hiçbir dosyada yok.
+
+```java
+public void writeAuthCookies(HttpServletResponse response, String accessToken, String refreshToken) { ... }
+public void writeAccessTokenCookie(HttpServletResponse response, String accessToken) { ... }
+public String readAccessToken(HttpServletRequest request) { ... }
+public String readRefreshToken(HttpServletRequest request) { ... }
+public void clearCookies(HttpServletResponse response) { ... }
+```
+
+
+### 4) JWT filter
+
+Her istekte `JwtAuthFilter`, `CookieHelper.readAccessToken` ile access token'ı alıyor, doğruluyor (imza + süre + `type == access`), kullanıcıyı yüklüyor ve `Authentication` nesnesini `SecurityContext`'e koyuyor. Herhangi bir JWT exception'ı (expired, malformed, imza yanlış) try-catch ile yutuluyor, filter auth'suz devam ediyor, endpoint korumalıysa Spring 401 dönüyor. 
+
+```java
+try {
+    if (jwtTokenManager.isTokenValid(token) && jwtTokenManager.isAccessToken(token)) {
+        // kullanıcıyı yükle, SecurityContext'e yaz
+    }
+} catch (Exception ignored) {
+    // token geçersiz/expired: auth atlanır, endpoint korumalıysa spring 401 döner
+}
+filterChain.doFilter(request, response);
+```
+
+### 5) Stateless, session'sız güvenlik
+
+Spring Security stateless çalışacak şekilde yapılandırıldı. Ne `JSESSIONID` ne de server-side session var. `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout` public; geri kalan her şey (`/auth/me`, `/auth/token-info`, sonradan eklenecek her endpoint) auth istiyor.
+
+```java
+http
+    .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+    .csrf(csrf -> csrf.disable())
+    .authorizeHttpRequests(auth -> auth
+        .requestMatchers("/auth/register", "/auth/login", "/auth/refresh", "/auth/logout").permitAll()
+        .anyRequest().authenticated()
+    )
+    .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+    .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+```
+
+CORS `allowCredentials = true` ile yapılandırılmış; tarayıcı Vite dev server'ına cookie göndersin diye.
+
+### 6) Standart response + merkezi hata yönetimi
+
+Tüm response'lar `ApiResponse<T>` ile dönülüyor, hatalar `GlobalExceptionHandler` tarafından merkezi olarak yakalanıyor. Controller'larda try-catch yok. "Kullanıcı zaten var" için 409, "bulunamadı" için 404, **refresh token eksik/geçersiz** için 401 (frontend interceptor'ın temiz şekilde login'e yönlendirebilmesi için), beklenmeyen hatalar için 500.
+
+```java
+@ExceptionHandler(InvalidRefreshTokenException.class)
+public ResponseEntity<ApiErrorResponse> handleInvalidRefreshToken(InvalidRefreshTokenException ex) {
+    return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+            .body(new ApiErrorResponse(401, ex.getMessage()));
+}
+```
+
+
+### 7) Frontend'de silent refresh
+
+React tarafı token'ları hiç görmüyor, HttpOnly'ler. Ama access token kullanıcı uygulamanın içindeyken dolarsa, ortaya çıkan 401 hatasını kullanıcıya göstermek kullanıcı deneyimini kötü etkilerdi. Bu yüzden axios instance'ına bir response interceptor koydum: 401 gelirse bir kez `/auth/refresh` deniyor, başarılıysa orijinal isteği tekrarlıyor. Refresh da başarısızsa kullanıcıyı `/login`'e atıyor.
+
+```ts
+axiosInstance.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      try {
+        await axiosInstance.post('/auth/refresh');
+        return axiosInstance(originalRequest);
+      } catch (refreshError) {
+        window.location.href = '/login';
+        return Promise.reject(refreshError);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+```
+
+`_retry` bayrağı, `/auth/refresh`'in kendisi 401 dönerse sonsuz döngüye girmemek için.
+
+### 8) Korumalı route'lar
+
+`ProtectedRoute` auth isteyen sayfaları koruyor. Kullanıcı giriş yapmadan üyeliğe özel URL'lere ulaşmaya çalıştığında `/auth/me` çağırıyor ve sonucu kontrol ediyor. Başarılıysa kullanıcı o sayfaya gidiyor, değilse login sayfasına yönlendiriyor. `/me` endpoint'i sadece `OK` dönüyor. Tek görevi filter'ı çalıştırmak, asıl cevap status code.
+
+### 9) Dashboard'da canlı token ömrü
+
+Görünmez refresh mekanizmasını görünür kılmak için dashboard iki token'ın kalan süresini canlı gösteriyor. Token'lar HttpOnly olduğu için (JS decode edemez) backend `GET /auth/token-info` endpoint'ini sunuyor; bu endpoint iki cookie'yi okuyup `exp` claim'lerini dönüyor. Service timestamp'leri çıkarıyor:
+
+```java
+public TokenInfoResponse getTokenInfo(String accessToken, String refreshToken) {
+    long accessExp = jwtTokenManager.extractExpiration(accessToken);
+    long refreshExp = jwtTokenManager.extractExpiration(refreshToken);
+    return new TokenInfoResponse(accessExp, refreshExp);
+}
+```
+
+Frontend her saniye tick atıyor; access sayacı sıfıra düştüğü anda `/auth/token-info`'yu yeniden çekiyor. Bu yeni istek 401 döner → interceptor refresh eder → retry yeni expiry timestamp'leri alır. Sayacın kendiliğinden sıfırlandığını ekranda görebiliyorsun.
+
+## Akışın Özeti
+
+1. **Kayıt** → `POST /auth/register` email + şifre ile → kullanıcı oluşturulur, şifre bcrypt ile hash'lenir.
+2. **Giriş** → `POST /auth/login` → server iki JWT imzalar (`type` claim'leriyle), HttpOnly cookie olarak set eder.
+3. **Korumalı istek** → cookie otomatik gider, `JwtAuthFilter` doğrular (imza + süre + `type == access`).
+4. **Access süresi dolduysa** → server 401 döner → axios interceptor `/auth/refresh` çağırır → server refresh token'ı doğrular (`type == refresh`) → yeni access cookie set edilir → orijinal istek tekrarlanır.
+5. **Dashboard geri sayım** → `GET /auth/token-info` süreleri döner; `setInterval` kalan zamanı çizer.
+6. **Çıkış** → `POST /auth/logout` → iki cookie de `maxAge = 0` ile temizlenir.
+
+## Gereksinimler
+
+- JDK 21
+- Maven
+- Node 20+
+- Docker (PostgreSQL için)
+
+## Çalıştırma
+
+1. **Veritabanı:** `backend/` içinde `docker compose up -d` ile PostgreSQL'i 5432 portunda ayağa kaldırın. Port çakışması varsa `compose.yaml`'ı ve `application.yaml` içindeki URL'yi güncelleyin.
+2. **Backend:** `backend/` içinde `./mvnw spring-boot:run` ile (veya IDE'den) çalıştırın. Server `http://localhost:8080`'de açılır. İlk açılışta `data.sql` üzerinden seed admin (`admin@gmail.com`, şifre `admin123`) eklenir.
+3. **Frontend:** `frontend/` içinde bir kere `npm install`, ardından `npm run dev`. Vite dev server `http://localhost:5173`'te.
+4. **Test:** `http://localhost:5173`'ü açın, yeni bir kullanıcı kaydedin ya da seed admin ile giriş yapın; `/dashboard`'a düşeceksiniz.
+
+</details>
+
+</details>
+
+
+
+
+<details >
 <summary><strong>Assignment - 1: Payment Service - 20.04.2026</strong></summary>
+
+<details>
+<summary><strong>English</strong></summary>
 
 I built a simple payment service with Spring Boot. There's a small HTML/JS UI on top of the REST API where the user picks a payment method and enters an amount and a confirmation message gets printed to the screen on payment.
 
@@ -401,3 +892,7 @@ Bu sayede Controller, Factory, diğer servisler hiçbiri değişmiyor.
 3. **UI / Test:** Tarayıcıdan `http://localhost:8080` (Spring Boot static HTML'i otomatik servis ediyor) veya Postman ile `POST /api/payments/pay`.
 
 </details>
+
+</details>
+
+

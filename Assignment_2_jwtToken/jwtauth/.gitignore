@@ -1,0 +1,94 @@
+# ============================================================
+# General — OS
+# ============================================================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================================
+# Editors / IDEs
+# ============================================================
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swp
+*.swo
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated
+.springBeans
+.sts4-cache
+.metadata
+.recommenders
+
+# ============================================================
+# Logs / Env
+# ============================================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+hs_err_pid*
+replay_pid*
+
+.env
+.env.*
+!.env.example
+*.local
+
+# ============================================================
+# Backend — Java / Maven / Spring Boot
+# ============================================================
+backend/target/
+backend/.mvn/wrapper/maven-wrapper.jar
+backend/HELP.md
+backend/build/
+backend/out/
+backend/bin/
+
+# Spring Boot
+backend/**/application-*.yaml
+backend/**/application-*.yml
+!backend/**/application.yaml
+!backend/**/application.yml
+
+# Java compiled
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+!**/maven-wrapper.jar
+
+# ============================================================
+# Frontend — Node / Vite / React
+# ============================================================
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/coverage/
+frontend/.eslintcache
+frontend/*.tsbuildinfo
+
+# ============================================================
+# Docker
+# ============================================================
+pgdata/
+postgres-data/
+*.pid
